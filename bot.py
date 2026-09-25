@@ -8,12 +8,13 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
-COINS = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "SOL": "solana",
+COINGECKO_HEADERS = {
+    "x-cg-demo-api-key": COINGECKO_API_KEY
 }
+
+COIN_IDS = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -26,9 +27,43 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Available commands:\n"
         "/start - Start the bot\n"
         "/help - Show commands\n"
-        "/price BTC - Check a crypto price\n"
+        "/price <symbol> - Check any supported crypto\n"
         "/top - Show top 5 cryptocurrencies by market cap"
     )
+
+async def find_coin_id(symbol: str):
+    symbol = symbol.strip().upper()
+
+    if symbol in COIN_IDS:
+        return COIN_IDS[symbol]
+
+    url = "https://api.coingecko.com/api/v3/search"
+    params = {"query": symbol}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url,
+                params=params,
+                headers=COINGECKO_HEADERS
+            )
+            response.raise_for_status()
+
+        coins = response.json().get("coins", [])
+
+        for coin in coins:
+            coin_symbol = str(coin.get("symbol", "")).strip().upper()
+
+            if coin_symbol == symbol:
+                coin_id = coin["id"]
+                COIN_IDS[symbol] = coin_id
+                return coin_id
+
+        return None
+
+    except Exception as e:
+        print("find_coin_id error:", type(e).name, e)
+        return None
 
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -39,15 +74,14 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     symbol = context.args[0].upper()
 
-    coin_id = COINS.get(symbol)
+    coin_id = await find_coin_id(symbol)
 
     if not coin_id:
         await update.message.reply_text(
-            "Coin not supported yet\n"
-            "Try: BTC, ETH or SOL"
+            f"Could not find a coin with symbol: {symbol}"
         )
         return
-
+    
     url = "https://api.coingecko.com/api/v3/simple/price"
 
     params = {
@@ -59,7 +93,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         async with httpx.AsyncClient(timeout=10.0)as client:
-            response = await client.get(url, params=params)
+            response = await client.get(url, params=params, headers=COINGECKO_HEADERS)
             response.raise_for_status()
 
         data = response.json()
@@ -92,7 +126,7 @@ async def top_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     try:
         async with httpx.AsyncClient(timeout=10.0)as client:
-            response = await client.get(url, params=params)
+            response = await client.get(url, params=params, headers=COINGECKO_HEADERS)
             response.raise_for_status()
 
         coins = response.json()
