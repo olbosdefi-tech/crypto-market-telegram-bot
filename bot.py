@@ -1,5 +1,6 @@
 import os
 import httpx
+import json
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -15,12 +16,34 @@ COINGECKO_HEADERS = {
 }
 
 COIN_IDS = {}
+WATCHLISTS = {}
+WATCHLIST_FILE = "watchlists.json"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Welcome to the Crypto Market Bot\n\n"
         "Use /help to see available commands."
     )
+
+def load_watchlists():
+    global WATCHLISTS
+
+    try:
+        with open(WATCHLIST_FILE, "r") as file:
+            data = json.load(file)
+
+        WATCHLISTS = {
+            int(user_id): coins
+            for user_id, coins in data.items()
+        }
+
+    except FileNotFoundError:
+        WATCHLISTS = {}
+
+
+def save_watchlists():
+    with open(WATCHLIST_FILE, "w") as file:
+        json.dump(WATCHLISTS, file, indent=4)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -113,6 +136,115 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Unable to fetch market data right now."
         )
+        
+async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /watch BTC"
+        )
+        return
+
+    user_id = update.effective_user.id
+    symbol = context.args[0].upper()
+
+    coin_id = await find_coin_id(symbol)
+
+    if not coin_id:
+        await update.message.reply_text(
+            f"Could not find a coin with symbol: {symbol}"
+        )
+        return
+
+    if user_id not in WATCHLISTS:
+        WATCHLISTS[user_id] = []
+
+    if symbol in WATCHLISTS[user_id]:
+        await update.message.reply_text(
+            f"{symbol} is already in your watchlist."
+        )
+        return
+
+    WATCHLISTS[user_id].append(symbol)
+    save_watchlists()
+
+    await update.message.reply_text(
+        f"{symbol} added to your watchlist."
+    )
+
+
+async def watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if user_id not in WATCHLISTS or not WATCHLISTS[user_id]:
+        await update.message.reply_text(
+            "Your watchlist is empty.\n"
+            "Use /watch BTC to add a coin."
+        )
+        return
+
+    message = "⭐ Your Watchlist\n\n"
+
+    for i, symbol in enumerate(WATCHLISTS[user_id], start=1):
+        coin_id = await find_coin_id(symbol)
+
+        url = "https://api.coingecko.com/api/v3/simple/price"
+
+        params = {
+            "ids": coin_id,
+            "vs_currencies": "usd",
+            "include_24hr_change": "true",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    url,
+                    params=params,
+                    headers=COINGECKO_HEADERS
+                )
+                response.raise_for_status()
+
+            data = response.json()
+
+            price = data[coin_id]["usd"]
+            change = data[coin_id].get("usd_24h_change", 0)
+
+            message += (
+                f"{i}. {symbol}\n"
+                f"Price: ${price:,.2f}\n"
+                f"24h: {change:+.2f}%\n\n"
+            )
+
+        except Exception:
+            message += (
+                f"{i}. {symbol}\n"
+                "Unable to fetch price right now.\n\n"
+            )
+
+    await update.message.reply_text(message)
+
+async def unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /unwatch BTC"
+        )
+        return
+
+    user_id = update.effective_user.id
+    symbol = context.args[0].upper()
+
+    if user_id not in WATCHLISTS or symbol not in WATCHLISTS[user_id]:
+        await update.message.reply_text(
+            f"{symbol} is not in your watchlist."
+        )
+        return
+
+    WATCHLISTS[user_id].remove(symbol)
+    save_watchlists()
+
+    await update.message.reply_text(
+        f"{symbol} removed from your watchlist."
+    )
 
 async def top_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = "https://api.coingecko.com/api/v3/coins/markets"
@@ -153,6 +285,8 @@ async def top_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message)
 
 def main():
+    load_watchlists()
+    
     if not TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN was not found in .env")
 
@@ -162,6 +296,10 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("price", price))
     app.add_handler(CommandHandler("top", top_coins))
+    app.add_handler(CommandHandler("watch", watch))
+    app.add_handler(CommandHandler("watchlist", watchlist))
+    app.add_handler(CommandHandler("unwatch", unwatch))
+
 
     print("Bot is running...")
 
