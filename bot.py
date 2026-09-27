@@ -1,6 +1,7 @@
 import os
 import httpx
 import json
+import asyncio
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -18,6 +19,8 @@ COINGECKO_HEADERS = {
 COIN_IDS = {}
 WATCHLISTS = {}
 WATCHLIST_FILE = "watchlists.json"
+ALERTS = {}
+ALERT_FILE = "alerts.json"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -45,13 +48,39 @@ def save_watchlists():
     with open(WATCHLIST_FILE, "w") as file:
         json.dump(WATCHLISTS, file, indent=4)
 
+def load_alerts():
+    global ALERTS
+
+    try:
+        with open(ALERT_FILE, "r") as file:
+            data = json.load(file)
+
+        ALERTS = {
+            int(user_id): alerts
+            for user_id, alerts in data.items()
+        }
+
+    except FileNotFoundError:
+        ALERTS = {}
+
+
+def save_alerts():
+    with open(ALERT_FILE, "w") as file:
+        json.dump(ALERTS, file, indent=4)
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Available commands:\n"
         "/start - Start the bot\n"
         "/help - Show commands\n"
         "/price <symbol> - Check any supported crypto\n"
-        "/top - Show top 5 cryptocurrencies by market cap"
+        "/top - Show top 5 cryptocurrencies by market cap\n"
+        "/watch <symbol> - Add coin to watchlist\n"
+        "/watchlist - Show your saved coins\n"
+        "/unwatch <symbol> - Remove coin from watchlist\n"
+        "/alert <symbol> <above|below> <price> - Create price alert\n"
+        "/alerts - Show active price alerts\n"
+        "/removealert <number> - Remove an alert\n"
     )
 
 async def find_coin_id(symbol: str):
@@ -284,13 +313,251 @@ async def top_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(message)
 
+async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 3:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/alert BTC above 90000\n"
+            "/alert BTC below 80000"
+        )
+        return
+
+    user_id = update.effective_user.id
+
+    symbol = context.args[0].upper()
+    direction = context.args[1].lower()
+
+    if direction not in ("above", "below"):
+        await update.message.reply_text(
+            "Direction must be 'above' or 'below'."
+        )
+        return
+
+    try:
+        target_price = float(context.args[2])
+
+        if target_price <= 0:
+            raise ValueError
+
+    except ValueError:
+        await update.message.reply_text(
+            "Target price must be a positive number."
+        )
+        return
+
+    coin_id = await find_coin_id(symbol)
+
+    if not coin_id:
+        await update.message.reply_text(
+            f"Could not find coin: {symbol}"
+        )
+        return
+
+    if user_id not in ALERTS:
+        ALERTS[user_id] = []
+
+    ALERTS[user_id].append(
+        {
+            "symbol": symbol,
+            "coin_id": coin_id,
+            "direction": direction,
+            "target": target_price
+        }
+    )
+
+    save_alerts()
+
+    await update.message.reply_text(
+        f"🔔 Alert created\n\n"
+        f"{symbol} {direction} ${target_price:,.2f}"
+    )
+
+async def alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_alerts = ALERTS.get(user_id, [])
+
+    if not user_alerts:
+        await update.message.reply_text(
+            "You have no active price alerts."
+        )
+        return
+
+    message = "🔔 Your Price Alerts\n\n"
+
+    for i, item in enumerate(user_alerts, start=1):
+        message += (
+            f"{i}. {item['symbol']} "
+            f"{item['direction']} "
+            f"${item['target']:,.2f}\n"
+        )
+
+    await update.message.reply_text(message)
+
+async def remove_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /removealert 1"
+        )
+        return
+
+    user_id = update.effective_user.id
+    user_alerts = ALERTS.get(user_id, [])
+
+    try:
+        alert_number = int(context.args[0])
+        index = alert_number - 1
+
+        if index < 0 or index >= len(user_alerts):
+            raise ValueError
+
+    except ValueError:
+        await update.message.reply_text(
+            "Invalid alert number."
+        )
+        return
+
+    removed = user_alerts.pop(index)
+
+    save_alerts()
+
+    await update.message.reply_text(
+        f"Alert removed: "
+        f"{removed['symbol']} "
+        f"{removed['direction']} "
+        f"${removed['target']:,.2f}"
+    )
+
+async def check_price_alerts(application):
+    if not ALERTS:
+        return
+
+    coin_ids = set()
+
+    for user_alerts in ALERTS.values():
+        for item in user_alerts:
+            coin_ids.add(item["coin_id"])
+
+    if not coin_ids:
+        return
+
+    url = "https://api.coingecko.com/api/v3/simple/price"
+
+    params = {
+        "ids": ",".join(coin_ids),
+        "vs_currencies": "usd"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url,
+                params=params,
+                headers=COINGECKO_HEADERS
+            )
+            response.raise_for_status()
+
+        prices = response.json()
+
+    except Exception as e:
+        print("Alert price check error:", type(e).name, e)
+        return
+
+    alerts_changed = False
+
+    for user_id, user_alerts in list(ALERTS.items()):
+        remaining_alerts = []
+
+        for item in user_alerts:
+            coin_id = item["coin_id"]
+
+            if coin_id not in prices:
+                remaining_alerts.append(item)
+                continue
+
+            current_price = prices[coin_id].get("usd")
+
+            if current_price is None:
+                remaining_alerts.append(item)
+                continue
+
+            direction = item["direction"]
+            target = item["target"]
+
+            triggered = (
+                direction == "above" and current_price >= target
+            ) or (
+                direction == "below" and current_price <= target
+            )
+
+            if triggered:
+                try:
+                    await application.bot.send_message(
+                        chat_id=user_id,
+                        text=(
+                            f"🚨 PRICE ALERT\n\n"
+                            f"{item['symbol']} is now "
+                            f"${current_price:,.2f}\n\n"
+                            f"Target: {direction} "
+                            f"${target:,.2f}"
+                        )
+                    )
+
+                    alerts_changed = True
+
+                except Exception as e:
+                    print(
+                        "Alert message error:",
+                        type(e).name,
+                        e
+                    )
+
+                    remaining_alerts.append(item)
+
+            else:
+                remaining_alerts.append(item)
+
+        ALERTS[user_id] = remaining_alerts
+
+    if alerts_changed:
+        save_alerts()
+
+async def alert_monitor(application):
+    await asyncio.sleep(10)
+
+    while True:
+        await check_price_alerts(application)
+        await asyncio.sleep(60)
+
+async def post_init(application):
+    application.bot_data["alert_monitor_task"] = asyncio.create_task(
+        alert_monitor(application)
+    )
+
+async def post_shutdown(application):
+    task = application.bot_data.get("alert_monitor_task")
+
+    if task:
+        task.cancel()
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
 def main():
     load_watchlists()
+    load_alerts()
     
     if not TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN was not found in .env")
 
-    app = Application.builder().token(TOKEN).build()
+    app = (
+    Application.builder()
+    .token(TOKEN)
+    .post_init(post_init)
+    .post_shutdown(post_shutdown)
+    .build()
+)
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
@@ -299,6 +566,9 @@ def main():
     app.add_handler(CommandHandler("watch", watch))
     app.add_handler(CommandHandler("watchlist", watchlist))
     app.add_handler(CommandHandler("unwatch", unwatch))
+    app.add_handler(CommandHandler("alert", alert))
+    app.add_handler(CommandHandler("alerts", alerts))
+    app.add_handler(CommandHandler("removealert", remove_alert))
 
 
     print("Bot is running...")
