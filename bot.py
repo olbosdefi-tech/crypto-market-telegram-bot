@@ -389,7 +389,7 @@ async def alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_alerts = ALERTS.get(user_id, [])
 
     if not user_alerts:
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             "You have no active price alerts."
         )
         return
@@ -403,7 +403,7 @@ async def alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"${item['target']:,.2f}\n"
         )
 
-    await update.message.reply_text(message)
+    await update.effective_message.reply_text(message)
 
 async def remove_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
