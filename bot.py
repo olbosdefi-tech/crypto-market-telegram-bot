@@ -20,7 +20,7 @@ COIN_IDS = {}
 WATCHLISTS = {}
 WATCHLIST_FILE = "watchlists.json"
 ALERTS = {}
-ALERT_FILE = "alerts.json"
+ALERTS_FILE = "alerts.json"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -52,7 +52,7 @@ def load_alerts():
     global ALERTS
 
     try:
-        with open(ALERT_FILE, "r") as file:
+        with open(ALERTS_FILE, "r") as file:
             data = json.load(file)
 
         ALERTS = {
@@ -65,8 +65,9 @@ def load_alerts():
 
 
 def save_alerts():
-    with open(ALERT_FILE, "w") as file:
+    with open(ALERTS_FILE, "w", encoding="utf-8") as file:
         json.dump(ALERTS, file, indent=4)
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -356,6 +357,17 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id not in ALERTS:
         ALERTS[user_id] = []
 
+    for item in ALERTS[user_id]:
+        if (
+            item["symbol"] == symbol
+            and item["direction"] == direction
+            and item["target"] == target_price
+        ):
+            await update.message.reply_text(
+                "That exact alert already exists."
+            )
+            return
+
     ALERTS[user_id].append(
         {
             "symbol": symbol,
@@ -394,34 +406,47 @@ async def alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message)
 
 async def remove_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
+    if len(context.args) != 1:
         await update.message.reply_text(
             "Usage: /removealert 1"
         )
         return
 
     user_id = update.effective_user.id
+
     user_alerts = ALERTS.get(user_id, [])
+
+    if not user_alerts:
+        await update.message.reply_text(
+            "You have no active alerts."
+        )
+        return
 
     try:
         alert_number = int(context.args[0])
-        index = alert_number - 1
-
-        if index < 0 or index >= len(user_alerts):
-            raise ValueError
 
     except ValueError:
         await update.message.reply_text(
-            "Invalid alert number."
+            "Alert number must be a number."
+        )
+        return
+
+    index = alert_number - 1
+
+    if index < 0 or index >= len(user_alerts):
+        await update.message.reply_text(
+            "Invalid alert number.\n"
+            "Use /alerts to see your alerts."
         )
         return
 
     removed = user_alerts.pop(index)
 
+    ALERTS[user_id] = user_alerts
     save_alerts()
 
     await update.message.reply_text(
-        f"Alert removed: "
+        f"Removed alert:\n"
         f"{removed['symbol']} "
         f"{removed['direction']} "
         f"${removed['target']:,.2f}"
