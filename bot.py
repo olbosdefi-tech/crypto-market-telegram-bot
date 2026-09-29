@@ -16,6 +16,22 @@ COINGECKO_HEADERS = {
     "x-cg-demo-api-key": COINGECKO_API_KEY
 }
 
+BOT_NAME = os.getenv(
+    "BOT_NAME",
+    "Crypto Market Bot"
+)
+
+BOT_VERSION = os.getenv(
+    "BOT_VERSION",
+    "V1.0"
+)
+
+BOT_DESCRIPTION = os.getenv(
+    "BOT_DESCRIPTION",
+    "Live crypto market data, personal watchlists, "
+    "market movers and automatic price alerts."
+)
+
 COIN_IDS = {}
 WATCHLISTS = {}
 WATCHLIST_FILE = "watchlists.json"
@@ -69,19 +85,63 @@ def save_alerts():
         json.dump(ALERTS, file, indent=4)
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Available commands:\n"
-        "/start - Start the bot\n"
-        "/help - Show commands\n"
-        "/price <symbol> - Check any supported crypto\n"
-        "/top - Show top 5 cryptocurrencies by market cap\n"
-        "/watch <symbol> - Add coin to watchlist\n"
-        "/watchlist - Show your saved coins\n"
-        "/unwatch <symbol> - Remove coin from watchlist\n"
-        "/alert <symbol> <above|below> <price> - Create price alert\n"
-        "/alerts - Show active price alerts\n"
-        "/removealert <number> - Remove an alert\n"
+async def help_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    message = (
+        f"📊 {BOT_NAME} — Commands\n\n"
+
+        "🌍 MARKET\n"
+        "/market - Crypto market snapshot\n"
+        "/price <symbol> - Check a coin price\n"
+        "/top - Top 5 by market cap\n"
+        "/gainers - Top 5 24h gainers\n"
+        "/losers - Top 5 24h losers\n\n"
+
+        "⭐ WATCHLIST\n"
+        "/watch <symbol> - Add a coin\n"
+        "/watchlist - View your watchlist\n"
+        "/unwatch <symbol> - Remove a coin\n\n"
+
+        "🔔 PRICE ALERTS\n"
+        "/alert <symbol> <above/below> <price>\n"
+        "/alerts - View active alerts\n"
+        "/removealert <number> - Remove an alert\n\n"
+
+        "ℹ️ OTHER\n"
+        "/about - About this bot\n"
+        "/help - Show this menu"
+    )
+
+    await update.effective_message.reply_text(
+        message
+    )
+
+async def about(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    message = (
+        f"🤖 {BOT_NAME}\n"
+        f"Version: {BOT_VERSION}\n\n"
+
+        f"{BOT_DESCRIPTION}\n\n"
+
+        "Features:\n"
+        "• Live crypto prices\n"
+        "• Market overview\n"
+        "• 24h gainers & losers\n"
+        "• Personal persistent watchlists\n"
+        "• Automatic price alerts\n"
+        "• Persistent alerts after restart\n\n"
+
+        "Market data powered by CoinGecko.\n"
+        "For informational purposes only."
+    )
+
+    await update.effective_message.reply_text(
+        message
     )
 
 async def find_coin_id(symbol: str):
@@ -313,6 +373,250 @@ async def top_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     await update.message.reply_text(message)
+
+async def gainers(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 100,
+        "page": 1,
+        "sparkline": "false",
+        "price_change_percentage": "24h",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url,
+                params=params,
+                headers=COINGECKO_HEADERS
+            )
+
+            response.raise_for_status()
+
+        coins = response.json()
+
+        coins = [
+            coin
+            for coin in coins
+            if coin.get("price_change_percentage_24h")
+            is not None
+        ]
+
+        coins.sort(
+            key=lambda coin:
+            coin["price_change_percentage_24h"],
+            reverse=True
+        )
+
+        top_gainers = coins[:5]
+
+        message = "🚀 Top 5 Gainers — 24h\n\n"
+
+        for i, coin in enumerate(top_gainers, start=1):
+            symbol = coin["symbol"].upper()
+            price = coin["current_price"]
+            change = coin["price_change_percentage_24h"]
+
+            message += (
+                f"{i}. {symbol}\n"
+                f"Price: ${price:,.4f}\n"
+                f"24h: +{change:.2f}%\n\n"
+            )
+
+        await update.effective_message.reply_text(
+            message
+        )
+
+    except Exception as e:
+        print(
+            "Gainers error:",
+            type(e).name,
+            e
+        )
+
+        await update.effective_message.reply_text(
+            "Unable to fetch gainers right now."
+        )
+
+async def losers(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": 100,
+        "page": 1,
+        "sparkline": "false",
+        "price_change_percentage": "24h",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url,
+                params=params,
+                headers=COINGECKO_HEADERS
+            )
+
+            response.raise_for_status()
+
+        coins = response.json()
+
+        coins = [
+            coin
+            for coin in coins
+            if coin.get("price_change_percentage_24h")
+            is not None
+        ]
+
+        coins.sort(
+            key=lambda coin:
+            coin["price_change_percentage_24h"]
+        )
+
+        top_losers = coins[:5]
+
+        message = "📉 Top 5 Losers — 24h\n\n"
+
+        for i, coin in enumerate(top_losers, start=1):
+            symbol = coin["symbol"].upper()
+            price = coin["current_price"]
+            change = coin["price_change_percentage_24h"]
+
+            message += (
+                f"{i}. {symbol}\n"
+                f"Price: ${price:,.4f}\n"
+                f"24h: {change:.2f}%\n\n"
+            )
+
+        await update.effective_message.reply_text(
+            message
+        )
+
+    except Exception as e:
+        print(
+            "Losers error:",
+            type(e).name,
+            e
+        )
+
+        await update.effective_message.reply_text(
+            "Unable to fetch losers right now."
+        )
+
+async def market(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    global_url = "https://api.coingecko.com/api/v3/global"
+    prices_url = "https://api.coingecko.com/api/v3/simple/price"
+
+    price_params = {
+        "ids": "bitcoin,ethereum,solana",
+        "vs_currencies": "usd",
+        "include_24hr_change": "true",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            global_response = await client.get(
+                global_url,
+                headers=COINGECKO_HEADERS
+            )
+
+            global_response.raise_for_status()
+
+            price_response = await client.get(
+                prices_url,
+                params=price_params,
+                headers=COINGECKO_HEADERS
+            )
+
+            price_response.raise_for_status()
+
+        global_data = global_response.json()["data"]
+        prices = price_response.json()
+
+        total_market_cap = global_data[
+            "total_market_cap"
+        ]["usd"]
+
+        market_change = global_data.get(
+            "market_cap_change_percentage_24h_usd",
+            0
+        )
+
+        btc_dominance = global_data[
+            "market_cap_percentage"
+        ]["btc"]
+
+        btc_price = prices["bitcoin"]["usd"]
+        btc_change = prices["bitcoin"].get(
+            "usd_24h_change",
+            0
+        )
+
+        eth_price = prices["ethereum"]["usd"]
+        eth_change = prices["ethereum"].get(
+            "usd_24h_change",
+            0
+        )
+
+        sol_price = prices["solana"]["usd"]
+        sol_change = prices["solana"].get(
+            "usd_24h_change",
+            0
+        )
+
+        market_cap_trillions = (
+            total_market_cap / 1_000_000_000_000
+        )
+
+        message = (
+            "🌍 Crypto Market Snapshot\n\n"
+
+            f"₿ BTC: ${btc_price:,.2f}\n"
+            f"24h: {btc_change:+.2f}%\n\n"
+
+            f"Ξ ETH: ${eth_price:,.2f}\n"
+            f"24h: {eth_change:+.2f}%\n\n"
+
+            f"◎ SOL: ${sol_price:,.2f}\n"
+            f"24h: {sol_change:+.2f}%\n\n"
+
+            f"💰 Total Market Cap: "
+            f"${market_cap_trillions:.2f}T\n"
+
+            f"📊 Market 24h: "
+            f"{market_change:+.2f}%\n"
+
+            f"₿ BTC Dominance: "
+            f"{btc_dominance:.2f}%"
+        )
+
+        await update.effective_message.reply_text(
+            message
+        )
+
+    except Exception as e:
+        print(
+            "Market error:",
+            type(e).name,
+            e
+        )
+
+        await update.effective_message.reply_text(
+            "Unable to fetch market data right now."
+        )
 
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 3:
@@ -594,6 +898,10 @@ def main():
     app.add_handler(CommandHandler("alert", alert))
     app.add_handler(CommandHandler("alerts", alerts))
     app.add_handler(CommandHandler("removealert", remove_alert))
+    app.add_handler(CommandHandler("gainers", gainers))
+    app.add_handler(CommandHandler("losers", losers))
+    app.add_handler(CommandHandler("market", market))
+    app.add_handler(CommandHandler("about", about))
 
 
     print("Bot is running...")
